@@ -1,0 +1,197 @@
+3silmeKisiti)
+FOREIGN KEY (ureticiTckn) REFERENCES uyeler (tckn) ON DELETE CASCADE, ----> uretim tablosunda
+
+3sayiKisiti)
+CONSTRAINT play_time_ck CHECK (miktar >= 100), ---> satis tablosunda
+
+4insert)uye kayit
+
+insert into uyeler values('?var_tckn?','?var_isim?','?var_soyad?','?var_telno?','?var_ilce?','?var_sehir?');
+
+4insert)satis log giris
+
+INSERT INTO satis(uyeTckn,musteriTckn,urunId,birimFiyat,miktar,satisTarihi) VALUES(('?var_uyeTckn?','?var_musteriTckn?',?var_urunId?,?var_birimFiyat?,?var_miktar?,?var_satisTarihi?)
+
+4insert)uretim ekle
+
+INSERT INTO uretim(ureticiTckn,urunId,miktar,birimFiyat) VALUES
+('?var_ureticiTckn?',?var_urunId?,'?var_miktar?',?var_birimFiyat?)
+
+4insert)musteri kayit
+
+INSERT INTO musteriler(tckn,ad,soyad,tel,il,ilce) VALUES
+('?var','?var','?var','?var','?var','?var?'),
+
+4update) birim fiyat tckn ve urunid verilen urunun birim fiyat guncellemesi
+
+UPDATE uretim SET birimFiyat = ?var_birimFiyat? WHERE ureticiTckn = '?var_tckn?' and urunId = ?var_urunid?
+
+
+4update)tckno ve urun ismi ve miktar aliniyor  verilen urunun miktarinin artirilmasi
+
+UPDATE uretim SET miktar = miktar + ?var_miktar? WHERE ureticiTckn= ?var_tckno? and urunId IN(SELECT urunId FROM urunler WHERE tur = ?var_turadi?)
+
+
+4delete)tckn si verilen uyenin silinmesi on delete CASCADE
+
+DELETE FROM uyeler WHERE tckn = ?var_tckno?
+
+
+5)turu verilen urunu satan kullanicilarin, miktar ve birim fiyatlarin listelenmesi
+SELECT ad,soyad,miktar,birimFiyat FROM uyeler,uretim WHERE urunId = (SELECT urunId FROM urunler WHERE tur = ?var_tur?) and tckn = ureticiTckn
+
+
+6)satis loglarinin view ile listelenmesi
+
+CREATE VIEW satisView AS SELECT * FROM satis;
+SELECT * FROM satisView
+
+
+7)Arayuzden sequence ile urun ismi girilip idnin otomatik atanmasi
+
+CREATE SEQUENCE seq_urunId
+MINVALUE 120
+MAXVALUE 1000
+INCREMENT BY 10;
+
+INSERT INTO urunler VALUES(nextval('seq_urunId'),?var_yenitur?)
+
+
+8)urun turu verildikten sonra hem urunu satmis hem de uretimde urunu bulunan kullanicilari listeleyen sorgu
+
+SELECT ad,soyad,tel FROM uyeler,uretim WHERE urunId = (SELECT urunId FROM urunler WHERE tur = ?var_tur?) and ureticiTckn = tckn
+INTERSECT
+SELECT ad,soyad,tel FROM uyeler,satis WHERE urunid = (SELECT urunId FROM urunler WHERE tur = ?var_tur?) and uyeTckn = tckn
+
+
+9) belirli bir miktardan fazla olan urunleri gorunteleyen sorgu
+
+SELECT tur,sum(miktar) FROM urunler u1,uretim u2 WHERE u1.urunId=u2.urunId GROUP BY tur HAVING sum(miktar) > ?var_miktar?
+
+9) hangi urunu kac farkli uretici uretmis
+
+select tur,count(*) from uretim inner join urunler on uretim.urunid = urunler.urunid group by tur order by count(*)
+
+
+-------------------------------------------------TRIGGERLAR
+11trigger1) birim fiyati degistirirekn 0.5 guncelleme kisiti koyma
+
+
+CREATE OR REPLACE FUNCTION trig_fonk_birimFiyatLimit()
+RETURNS TRIGGER AS $$
+BEGIN
+
+IF ((new.birimFiyat < old.birimFiyat * 1.5) and (new.birimFiyat > old.birimFiyat * 0.5))
+THEN
+	RETURN new;
+ELSE
+	RAISE EXCEPTION '0.5 ten fazla zam veya indirim yapamazsiniz';
+	RETURN old;
+END IF;
+
+
+
+END;
+$$ LANGUAGE  'plpgsql';
+
+--
+CREATE  TRIGGER tr1_birimFiyatLimit
+BEFORE UPDATE
+ON uretim
+FOR EACH ROW EXECUTE PROCEDURE trig_fonk_birimFiyatLimit();
+
+-------------------
+11trigger2) Bir urunden 50000 den fazla uretilmeme kisiti
+
+CREATE OR REPLACE FUNCTION trig_fonk_miktarLimit()
+RETURNS TRIGGER AS $$
+BEGIN
+
+IF ((new.miktar + (SELECT sum(miktar) FROM uretim  WHERE new.urunId = urunId))  > 50000 or (new.miktar > 50000))
+THEN
+	RAISE EXCEPTION 'Bu urunden uretilmis fazla miktar bulundugu icin ekleyemiyorsunuz.
+                    Daha kucuk miktarlar eklemeyi deneyin.';
+	RETURN NULL;
+ELSE
+	RETURN new;
+END IF;
+
+END;
+$$ LANGUAGE  'plpgsql';
+
+
+--
+CREATE  TRIGGER tr2_birimMiktarLimitOnUpdate()
+BEFORE UPDATE
+ON uretim
+FOR EACH ROW EXECUTE PROCEDURE trig_fonk_miktarLimit();
+--
+
+CREATE  TRIGGER tr3_birimMiktarLimitOnInsert()
+BEFORE INSERT
+ON uretim
+FOR EACH ROW EXECUTE PROCEDURE trig_fonk_miktarLimit();
+
+---------------------------------------------------------TRIGGERLAR BITIS
+
+
+------------------------------------------------------FONKSIYONLAR
+
+-----Fonk1)gun sayisi ve tur veriliyor gun sayisina gore listeleme
+
+CREATE  TYPE satis_log AS (var_uyeTckn varchar(11), var_miktar INT,var_urunId INT,var_satisTarihi DATE);
+CREATE OR REPLACE FUNCTION satis_listele(var_tur urunler.tur%TYPE,var_gun INT)
+RETURNS satis_log[] AS '
+DECLARE
+	log_cursor CURSOR FOR SELECT uyeTckn,miktar,s1.urunId,satisTarihi FROM satis s1 WHERE s1.urunId = (SELECT urunId FROM urunler WHERE tur = var_tur);
+satis_array satis_log[];
+i integer;
+BEGIN
+    i := 1;
+            FOR log_record IN log_cursor LOOP
+	  	IF(((SELECT CURRENT_DATE) - log_record.satisTarihi ) <= var_gun)
+		THEN
+		  satis_array[i] = log_record;
+		  i := i + 1;
+		END IF;
+          END LOOP;    RETURN satis_array;
+END;
+' LANGUAGE 'plpgsql';
+
+
+----------
+--------Fonk2)tcknsi verilen kisinin toplam kazancini veren fonksiyon
+
+CREATE  or REPLACE FUNCTION toplam_kazanc (var_tckn satis.uyeTckn%type)
+RETURNS NUMERIC  AS '
+DECLARE
+	toplam_kazanc NUMERIC;
+BEGIN
+SELECT 	sum(toplamFiyat) INTO toplam_kazanc
+FROM 	satis
+WHERE 	uyeTckn = var_tckn;
+		RETURN toplam_kazanc;
+END;
+' LANGUAGE  plpgsql;
+
+
+-----------
+--------Fonk3)ismi verilen sebzenin satis tablosundaki ortalama satis fiyati
+
+
+CREATE  or REPLACE FUNCTION ortalama_fiyat(var_tur urunler.tur%type)
+RETURNS NUMERIC  AS '
+DECLARE
+	toplam_fiyat NUMERIC;
+	toplam_kilo NUMERIC;
+	ortalama_fiyat NUMERIC;
+BEGIN
+SELECT 	sum(toplamFiyat),sum(miktar) INTO toplam_fiyat,toplam_kilo
+FROM 	satis s1,urunler u1
+WHERE 	s1.urunId = (SELECT urunId FROM urunler WHERE tur = var_tur);
+ortalama_fiyat = toplam_fiyat/toplam_kilo;
+		RETURN ortalama_fiyat;
+END;
+' LANGUAGE  plpgsql;
+
+----------------------------------------------------------FONKSIYONLAR BITIS
